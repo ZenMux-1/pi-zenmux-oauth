@@ -1,0 +1,53 @@
+{
+  "name": "@zenmux/pi-zenmux-oauth",
+  "version": "0.1.0",
+  "description": "ZenMux provider for Pi with OAuth 2.0 PKCE, dynamic model discovery, and automatic token refresh",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "zenmux",
+    "oauth",
+    "pkce",
+    "llm",
+    "ai"
+  ],
+  "author": {
+    "name": "zenmux",
+    "email": "jx@zenmux.ai"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZenMux-1/pi-zenmux-oauth.git"
+  },
+  "homepage": "https://github.com/ZenMux-1/pi-zenmux-oauth#readme",
+  "bugs": {
+    "url": "https://github.com/ZenMux-1/pi-zenmux-oauth/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "node --check index.mjs",
+    "test": "npm run check",
+    "prepack": "npm test",
+    "dev": "ZENMUX_OAUTH_ORIGIN=https://pre.zenmux.ai ZENMUX_API_BASE_URL=https://zenmux.ai/api/v1 pi --approve --no-session -e ./index.mjs",
+    "dev:prod": "pi --approve --no-session -e ./index.mjs"
+  }
+}

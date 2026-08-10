@@ -1,0 +1,217 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+const portalOrigin = (process.env.ZENMUX_OAUTH_ORIGIN || 'https://zenmux.ai').replace(/\/$/, '');
+const apiBaseUrl = (process.env.ZENMUX_API_BASE_URL || 'https://zenmux.ai/api/v1').replace(/\/$/, '');
+let clientId = process.env.ZENMUX_OAUTH_CLIENT_ID || '';
+const defaultModel = process.env.ZENMUX_TEST_MODEL || 'deepseek/deepseek-v4-flash';
+const clientCachePath = join(homedir(), '.pi', 'zenmux-oauth-clients.json');
+
+function base64Url(buffer) {
+  return buffer.toString('base64url');
+}
+
+function createPkce() {
+  const verifier = base64Url(randomBytes(48));
+  const challenge = base64Url(createHash('sha256').update(verifier).digest());
+  return { verifier, challenge };
+}
+
+function toPiModel(model) {
+  const input = Array.isArray(model.input_modalities)
+    ? model.input_modalities.filter((item) => item === 'text' || item === 'image')
+    : ['text'];
+  return {
+    id: model.id,
+    name: `ZenMux · ${model.id}`,
+    reasoning: model.capabilities?.reasoning === true,
+    input: input.length ? input : ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: model.context_length || 128000,
+    maxTokens: 16384,
+  };
+}
+
+async function fetchModels() {
+  const response = await fetch(`${apiBaseUrl}/models`);
+  const payload = await response.json();
+  if (!response.ok || !Array.isArray(payload.data)) {
+    throw new Error(`ZenMux model discovery failed (${response.status})`);
+  }
+  return payload.data
+    .filter((model) => typeof model?.id === 'string' && model.id)
+    .map(toPiModel);
+}
+
+async function exchangeToken(body, signal) {
+  const response = await fetch(`${portalOrigin}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+    signal,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error_description || payload.error || `OAuth token request failed (${response.status})`);
+  }
+  return payload;
+}
+
+async function readCachedClientId() {
+  try {
+    const cache = JSON.parse(await readFile(clientCachePath, 'utf8'));
+    return cache[portalOrigin] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveClientId(value) {
+  let cache = {};
+  try {
+    cache = JSON.parse(await readFile(clientCachePath, 'utf8'));
+  } catch {
+    // First registration has no cache file yet.
+  }
+  cache[portalOrigin] = value;
+  await mkdir(dirname(clientCachePath), { recursive: true });
+  await writeFile(clientCachePath, `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o600 });
+}
+
+async function getClientId() {
+  if (clientId) return clientId;
+  const cached = await readCachedClientId();
+  if (cached) {
+    clientId = cached;
+    return clientId;
+  }
+  const response = await fetch(`${portalOrigin}/oauth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      client_name: 'ZenMux for Pi',
+      application_type: 'native',
+      token_endpoint_auth_method: 'none',
+      redirect_uris: ['http://127.0.0.1/callback'],
+      scope: 'inference:invoke offline_access',
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.client_id) {
+    throw new Error(payload.message || payload.error || `ZenMux client registration failed (${response.status})`);
+  }
+  clientId = payload.client_id;
+  await saveClientId(clientId);
+  return clientId;
+}
+
+async function login(callbacks) {
+  const currentClientId = await getClientId();
+  const { verifier, challenge } = createPkce();
+  const state = base64Url(randomBytes(32));
+
+  const callback = await new Promise((resolve, reject) => {
+    let redirectUri = '';
+    let settled = false;
+    const server = createServer((request, response) => {
+      if (!redirectUri || settled) {
+        response.writeHead(409).end('OAuth callback is no longer active');
+        return;
+      }
+      const requestUrl = new URL(request.url || '/', redirectUri);
+      if (requestUrl.pathname !== '/callback') {
+        response.writeHead(404).end('Not found');
+        return;
+      }
+      const returnedState = requestUrl.searchParams.get('state');
+      const code = requestUrl.searchParams.get('code');
+      const oauthError = requestUrl.searchParams.get('error');
+      if (oauthError || returnedState !== state || !code) {
+        settled = true;
+        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end('ZenMux authorization failed. You can close this window.');
+        server.close();
+        reject(new Error(oauthError || 'OAuth callback state mismatch'));
+        return;
+      }
+      settled = true;
+      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('ZenMux authorization completed. You can close this window and return to Pi.');
+      server.close();
+      resolve({ code, redirectUri });
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      redirectUri = `http://127.0.0.1:${address.port}/callback`;
+      const authorizeUrl = new URL(`${portalOrigin}/oauth/authorize`);
+      authorizeUrl.searchParams.set('response_type', 'code');
+      authorizeUrl.searchParams.set('client_id', currentClientId);
+      authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+      authorizeUrl.searchParams.set('scope', 'inference:invoke offline_access');
+      authorizeUrl.searchParams.set('state', state);
+      authorizeUrl.searchParams.set('code_challenge', challenge);
+      authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+      callbacks.onProgress?.('Waiting for ZenMux authorization in your browser…');
+      callbacks.onAuth({ url: authorizeUrl.toString() });
+    });
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error('ZenMux OAuth callback timed out after 5 minutes'));
+    }, 5 * 60 * 1000);
+    timeout.unref();
+  });
+
+  const tokens = await exchangeToken(new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: currentClientId,
+    code: callback.code,
+    redirect_uri: callback.redirectUri,
+    code_verifier: verifier,
+  }));
+  if (!tokens.refresh_token) throw new Error('ZenMux did not return a refresh token');
+  return {
+    access: tokens.access_token,
+    refresh: tokens.refresh_token,
+    expires: Date.now() + tokens.expires_in * 1000,
+  };
+}
+
+export default function zenMuxProvider(pi) {
+  const fallbackModel = toPiModel({ id: defaultModel });
+  pi.registerProvider('zenmux', {
+    name: 'ZenMux',
+    baseUrl: apiBaseUrl,
+    api: 'openai-completions',
+    authHeader: true,
+    models: [fallbackModel],
+    async refreshModels() {
+      const models = await fetchModels();
+      return models.length ? models : [fallbackModel];
+    },
+    oauth: {
+      name: 'ZenMux OAuth (PKCE)',
+      login,
+      async refreshToken(credentials, signal) {
+        const currentClientId = await getClientId();
+        const tokens = await exchangeToken(new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: currentClientId,
+          refresh_token: credentials.refresh,
+        }), signal);
+        if (!tokens.refresh_token) throw new Error('ZenMux refresh token rotation failed');
+        return {
+          access: tokens.access_token,
+          refresh: tokens.refresh_token,
+          expires: Date.now() + tokens.expires_in * 1000,
+        };
+      },
+      getApiKey(credentials) {
+        return credentials.access;
+      },
+    },
+  });
+}
