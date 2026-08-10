@@ -55,6 +55,18 @@ test('maps the rich ZenMux model catalog shape', () => {
   assert.equal(model.reasoning, true);
 });
 
+test('maps every supported ZenMux reasoning mode', () => {
+  for (const supportsReasoning of [1, 2, 3]) {
+    assert.equal(
+      toPiModel({ id: `example/reasoning-${supportsReasoning}`, endpoints: [{ supports_reasoning: supportsReasoning }] })
+        .reasoning,
+      true,
+    );
+  }
+
+  assert.equal(toPiModel({ id: 'example/no-reasoning', endpoints: [{ supports_reasoning: 0 }] }).reasoning, false);
+});
+
 test('uses the ZenMux Anthropic base URL for Messages', () => {
   assert.equal(resolvePiBaseUrl('anthropic-messages'), 'https://zenmux.ai/api/anthropic');
   assert.equal(resolvePiBaseUrl('openai-responses'), 'https://zenmux.ai/api/v1');

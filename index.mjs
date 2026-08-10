@@ -84,7 +84,7 @@ export function toPiModel(model) {
     .map((endpoint) => endpoint.context_length)
     .filter((value) => Number.isFinite(value));
   const endpointReasoning = (model.endpoints ?? []).some(
-    (endpoint) => endpoint.supports_reasoning === true || endpoint.supports_reasoning === 1,
+    (endpoint) => Number(endpoint.supports_reasoning) > 0,
   );
   return {
     id,
