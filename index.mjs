@@ -6,9 +6,26 @@ import { dirname, join } from 'node:path';
 
 const portalOrigin = (process.env.ZENMUX_OAUTH_ORIGIN || 'https://zenmux.ai').replace(/\/$/, '');
 const apiBaseUrl = (process.env.ZENMUX_API_BASE_URL || 'https://zenmux.ai/api/v1').replace(/\/$/, '');
+const anthropicBaseUrl = (
+  process.env.ZENMUX_ANTHROPIC_BASE_URL || apiBaseUrl.replace(/\/v1$/, '/anthropic')
+).replace(/\/$/, '');
+const modelCatalogUrl = process.env.ZENMUX_MODEL_CATALOG_URL
+  || `${new URL(apiBaseUrl).origin}/api/frontend/model/available/list`;
 let clientId = process.env.ZENMUX_OAUTH_CLIENT_ID || '';
 const defaultModel = process.env.ZENMUX_TEST_MODEL || 'deepseek/deepseek-v4-flash';
 const clientCachePath = join(homedir(), '.pi', 'zenmux-oauth-clients.json');
+
+const protocolAliases = new Map([
+  ['anthropic', 'anthropic-messages'],
+  ['anthropic-messages', 'anthropic-messages'],
+  ['messages', 'anthropic-messages'],
+  ['openai-responses', 'openai-responses'],
+  ['responses', 'openai-responses'],
+  ['chat.completions', 'openai-completions'],
+  ['chat-completions', 'openai-completions'],
+  ['openai-completions', 'openai-completions'],
+]);
+const protocolPriority = ['anthropic-messages', 'openai-responses', 'openai-completions'];
 
 function base64Url(buffer) {
   return buffer.toString('base64url');
@@ -20,29 +37,77 @@ function createPkce() {
   return { verifier, challenge };
 }
 
-function toPiModel(model) {
+function collectModelProtocols(model) {
+  const protocols = [];
+  const append = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(append);
+    } else if (typeof value === 'string') {
+      value.split(',').forEach((item) => protocols.push(item.trim().toLowerCase()));
+    }
+  };
+
+  append(model.api);
+  append(model.protocols);
+  append(model.supported_endpoint_types);
+  append(model.capabilities?.protocols);
+  for (const endpoint of model.endpoints ?? []) {
+    append(endpoint.api);
+    append(endpoint.suitable_api);
+    for (const adapter of endpoint.adapters ?? []) append(adapter.api);
+  }
+  return protocols;
+}
+
+function supportsLanguageModelProtocol(model) {
+  return collectModelProtocols(model).some((protocol) => protocolAliases.has(protocol));
+}
+
+export function resolvePiApi(model) {
+  const supported = new Set(
+    collectModelProtocols(model).map((protocol) => protocolAliases.get(protocol)).filter(Boolean),
+  );
+  return protocolPriority.find((protocol) => supported.has(protocol)) ?? 'anthropic-messages';
+}
+
+export function resolvePiBaseUrl(api) {
+  return api === 'anthropic-messages' ? anthropicBaseUrl : apiBaseUrl;
+}
+
+export function toPiModel(model) {
   const input = Array.isArray(model.input_modalities)
     ? model.input_modalities.filter((item) => item === 'text' || item === 'image')
     : ['text'];
+  const api = resolvePiApi(model);
+  const id = model.slug || model.id;
+  const endpointContextWindows = (model.endpoints ?? [])
+    .map((endpoint) => endpoint.context_length)
+    .filter((value) => Number.isFinite(value));
+  const endpointReasoning = (model.endpoints ?? []).some(
+    (endpoint) => endpoint.supports_reasoning === true || endpoint.supports_reasoning === 1,
+  );
   return {
-    id: model.id,
-    name: `ZenMux · ${model.id}`,
-    reasoning: model.capabilities?.reasoning === true,
+    id,
+    name: `ZenMux · ${model.display_name || model.name || id}`,
+    api,
+    baseUrl: resolvePiBaseUrl(api),
+    reasoning: model.capabilities?.reasoning === true || endpointReasoning,
     input: input.length ? input : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: model.context_length || 128000,
+    contextWindow: model.context_length || Math.max(0, ...endpointContextWindows) || 128000,
     maxTokens: 16384,
   };
 }
 
 async function fetchModels() {
-  const response = await fetch(`${apiBaseUrl}/models`);
+  const response = await fetch(modelCatalogUrl);
   const payload = await response.json();
   if (!response.ok || !Array.isArray(payload.data)) {
     throw new Error(`ZenMux model discovery failed (${response.status})`);
   }
   return payload.data
-    .filter((model) => typeof model?.id === 'string' && model.id)
+    .filter((model) => typeof (model?.id || model?.slug) === 'string')
+    .filter(supportsLanguageModelProtocol)
     .map(toPiModel);
 }
 
@@ -185,7 +250,7 @@ export default function zenMuxProvider(pi) {
   pi.registerProvider('zenmux', {
     name: 'ZenMux',
     baseUrl: apiBaseUrl,
-    api: 'openai-completions',
+    api: 'anthropic-messages',
     authHeader: true,
     models: [fallbackModel],
     async refreshModels() {

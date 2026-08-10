@@ -2,6 +2,8 @@
 
 Use [ZenMux](https://zenmux.ai) models in Pi with OAuth 2.0 Authorization Code + PKCE. The extension registers the `zenmux` provider, discovers the current model catalog, and refreshes OAuth tokens with rotation.
 
+Model requests prefer Anthropic Messages, then OpenAI Responses, and use Chat Completions only as a compatibility fallback. Protocol selection is performed per model from the endpoint adapters advertised by the ZenMux model catalog; the local fallback model uses Anthropic Messages when discovery is unavailable.
+
 ## Install
 
 Install the package with Pi:
@@ -40,6 +42,8 @@ Production works without additional configuration. These environment variables a
 | --- | --- | --- |
 | `ZENMUX_OAUTH_ORIGIN` | `https://zenmux.ai` | OAuth authorization server origin |
 | `ZENMUX_API_BASE_URL` | `https://zenmux.ai/api/v1` | OpenAI-compatible API base URL |
+| `ZENMUX_ANTHROPIC_BASE_URL` | derived as `https://zenmux.ai/api/anthropic` | Anthropic-compatible API base URL |
+| `ZENMUX_MODEL_CATALOG_URL` | `https://zenmux.ai/api/frontend/model/available/list` | Rich model catalog containing endpoint protocol adapters |
 | `ZENMUX_TEST_MODEL` | `deepseek/deepseek-v4-flash` | Fallback model when discovery is unavailable |
 | `ZENMUX_OAUTH_CLIENT_ID` | none | Reuse a pre-registered public client instead of automatic registration |
 
