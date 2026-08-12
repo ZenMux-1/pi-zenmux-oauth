@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { resolvePiApi, resolvePiBaseUrl, toPiModel } from '../index.mjs';
+import {
+  productionOAuthClientId,
+  resolvePiApi,
+  resolvePiBaseUrl,
+  toPiModel,
+} from '../index.mjs';
+
+test('ships one stable production OAuth public client', () => {
+  assert.equal(productionOAuthClientId, 'zpc_-6SsDHPARf6Rg5TTzbvlOQka');
+});
 
 test('prefers Anthropic Messages over Responses and Chat Completions', () => {
   assert.equal(

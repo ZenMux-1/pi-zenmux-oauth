@@ -22,9 +22,9 @@ Pi opens the ZenMux authorization page in your browser. After approval, the brow
 
 ## How authentication works
 
-- The extension automatically registers a native public OAuth client on first use.
+- The official `https://zenmux.ai` service uses one bundled native public OAuth client ID.
 - Authorization uses PKCE with `S256`; no client secret is stored or distributed.
-- The OAuth client ID is cached per authorization-server origin in `~/.pi/zenmux-oauth-clients.json`.
+- Existing client IDs are still read from `~/.pi/zenmux-oauth-clients.json` to keep previously issued credentials working. Non-production origins register and cache a client on first use.
 - Access and refresh tokens are managed by Pi's provider credential store.
 - Refresh tokens rotate on every refresh.
 - Model requests use the OAuth access token as a Bearer token. ZenMux API keys are not exposed to the extension.
@@ -45,7 +45,7 @@ Production works without additional configuration. These environment variables a
 | `ZENMUX_ANTHROPIC_BASE_URL` | derived as `https://zenmux.ai/api/anthropic` | Anthropic-compatible API base URL |
 | `ZENMUX_MODEL_CATALOG_URL` | `https://zenmux.ai/api/frontend/model/available/list` | Rich model catalog containing endpoint protocol adapters |
 | `ZENMUX_TEST_MODEL` | `deepseek/deepseek-v4-flash` | Fallback model when discovery is unavailable |
-| `ZENMUX_OAUTH_CLIENT_ID` | none | Reuse a pre-registered public client instead of automatic registration |
+| `ZENMUX_OAUTH_CLIENT_ID` | bundled for `https://zenmux.ai` | Override the public client ID for development or self-hosted environments |
 
 ## Local development
 

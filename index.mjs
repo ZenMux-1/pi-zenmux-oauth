@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 
 const portalOrigin = (process.env.ZENMUX_OAUTH_ORIGIN || 'https://zenmux.ai').replace(/\/$/, '');
 const apiBaseUrl = (process.env.ZENMUX_API_BASE_URL || 'https://zenmux.ai/api/v1').replace(/\/$/, '');
+const productionOAuthOrigin = 'https://zenmux.ai';
+export const productionOAuthClientId = 'zpc_-6SsDHPARf6Rg5TTzbvlOQka';
 const anthropicBaseUrl = (
   process.env.ZENMUX_ANTHROPIC_BASE_URL || apiBaseUrl.replace(/\/v1$/, '/anthropic')
 ).replace(/\/$/, '');
@@ -151,6 +153,10 @@ async function getClientId() {
   const cached = await readCachedClientId();
   if (cached) {
     clientId = cached;
+    return clientId;
+  }
+  if (portalOrigin === productionOAuthOrigin) {
+    clientId = productionOAuthClientId;
     return clientId;
   }
   const response = await fetch(`${portalOrigin}/oauth/register`, {
