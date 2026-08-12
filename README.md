@@ -28,6 +28,8 @@ Pi opens the ZenMux authorization page in your browser. After approval, the brow
 - Access and refresh tokens are managed by Pi's provider credential store.
 - Refresh tokens rotate on every refresh.
 - Model requests use the OAuth access token as a Bearer token. ZenMux API keys are not exposed to the extension.
+- The discovered model catalog is cached by Pi in `~/.pi/agent/models-store.json`. The extension restores it at startup, refreshes it when network access is allowed, and keeps the last valid catalog when discovery fails or returns empty.
+- Cached models are scoped to the configured OAuth origin and model catalog URL, so production and development catalogs are not mixed.
 
 The package requests only these scopes:
 

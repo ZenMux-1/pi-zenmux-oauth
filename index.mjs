@@ -16,6 +16,8 @@ const modelCatalogUrl = process.env.ZENMUX_MODEL_CATALOG_URL
 let clientId = process.env.ZENMUX_OAUTH_CLIENT_ID || '';
 const defaultModel = process.env.ZENMUX_TEST_MODEL || 'deepseek/deepseek-v4-flash';
 const clientCachePath = join(homedir(), '.pi', 'zenmux-oauth-clients.json');
+const providerId = 'zenmux';
+const modelCacheSchemaVersion = 1;
 
 const protocolAliases = new Map([
   ['anthropic', 'anthropic-messages'],
@@ -101,8 +103,8 @@ export function toPiModel(model) {
   };
 }
 
-async function fetchModels() {
-  const response = await fetch(modelCatalogUrl);
+async function fetchModels(signal) {
+  const response = await fetch(modelCatalogUrl, { signal });
   const payload = await response.json();
   if (!response.ok || !Array.isArray(payload.data)) {
     throw new Error(`ZenMux model discovery failed (${response.status})`);
@@ -111,6 +113,59 @@ async function fetchModels() {
     .filter((model) => typeof (model?.id || model?.slug) === 'string')
     .filter(supportsLanguageModelProtocol)
     .map(toPiModel);
+}
+
+export function createModelsCacheEntry(models, checkedAt = Date.now()) {
+  return {
+    schemaVersion: modelCacheSchemaVersion,
+    oauthOrigin: portalOrigin,
+    modelCatalogUrl,
+    models: models.map((model) => ({ ...model, provider: providerId })),
+    checkedAt,
+  };
+}
+
+export function restoreCachedModels(entry) {
+  if (
+    entry?.schemaVersion !== modelCacheSchemaVersion
+    || entry.oauthOrigin !== portalOrigin
+    || entry.modelCatalogUrl !== modelCatalogUrl
+    || !Array.isArray(entry.models)
+  ) {
+    return [];
+  }
+
+  return entry.models
+    .filter((model) => model?.provider === providerId && typeof model.id === 'string' && model.id)
+    .map(({ provider: _provider, ...model }) => model);
+}
+
+export async function refreshZenMuxModels(context, fallbackModels, discoverModels = fetchModels) {
+  let cachedModels = [];
+  try {
+    cachedModels = restoreCachedModels(await context?.store?.read?.());
+  } catch {
+    // A missing or unreadable cache must not prevent model discovery.
+  }
+
+  const availableModels = cachedModels.length ? cachedModels : fallbackModels;
+  if (context?.allowNetwork === false || context?.signal?.aborted) return availableModels;
+
+  try {
+    const refreshedModels = await discoverModels(context?.signal);
+    if (!Array.isArray(refreshedModels) || !refreshedModels.length || context?.signal?.aborted) {
+      return availableModels;
+    }
+
+    try {
+      await context?.store?.write?.(createModelsCacheEntry(refreshedModels));
+    } catch {
+      // Cache persistence is best-effort; the live catalog is still usable.
+    }
+    return refreshedModels;
+  } catch {
+    return availableModels;
+  }
 }
 
 async function exchangeToken(body, signal) {
@@ -253,15 +308,14 @@ async function login(callbacks) {
 
 export default function zenMuxProvider(pi) {
   const fallbackModel = toPiModel({ id: defaultModel });
-  pi.registerProvider('zenmux', {
+  pi.registerProvider(providerId, {
     name: 'ZenMux',
     baseUrl: apiBaseUrl,
     api: 'anthropic-messages',
     authHeader: true,
     models: [fallbackModel],
-    async refreshModels() {
-      const models = await fetchModels();
-      return models.length ? models : [fallbackModel];
+    async refreshModels(context) {
+      return refreshZenMuxModels(context, [fallbackModel]);
     },
     oauth: {
       name: 'ZenMux OAuth (PKCE)',

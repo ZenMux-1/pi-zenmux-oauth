@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createModelsCacheEntry,
   productionOAuthClientId,
+  refreshZenMuxModels,
   resolvePiApi,
   resolvePiBaseUrl,
+  restoreCachedModels,
   toPiModel,
 } from '../index.mjs';
 
@@ -80,4 +83,101 @@ test('uses the ZenMux Anthropic base URL for Messages', () => {
   assert.equal(resolvePiBaseUrl('anthropic-messages'), 'https://zenmux.ai/api/anthropic');
   assert.equal(resolvePiBaseUrl('openai-responses'), 'https://zenmux.ai/api/v1');
   assert.equal(resolvePiBaseUrl('openai-completions'), 'https://zenmux.ai/api/v1');
+});
+
+test('persists and restores the model catalog in Pi store format', () => {
+  const model = toPiModel({ id: 'example/cached' });
+  const entry = createModelsCacheEntry([model], 1234);
+
+  assert.equal(entry.schemaVersion, 1);
+  assert.equal(entry.oauthOrigin, 'https://zenmux.ai');
+  assert.equal(entry.modelCatalogUrl, 'https://zenmux.ai/api/frontend/model/available/list');
+  assert.equal(entry.checkedAt, 1234);
+  assert.equal(entry.models[0].provider, 'zenmux');
+  assert.deepEqual(restoreCachedModels(entry), [model]);
+});
+
+test('uses cached models without network during Pi startup', async () => {
+  const cachedModel = toPiModel({ id: 'example/cached' });
+  let networkCalls = 0;
+  const models = await refreshZenMuxModels({
+    allowNetwork: false,
+    store: {
+      async read() {
+        return createModelsCacheEntry([cachedModel]);
+      },
+      async write() {
+        assert.fail('offline refresh must not write the cache');
+      },
+    },
+  }, [toPiModel({ id: 'example/fallback' })], async () => {
+    networkCalls += 1;
+    return [];
+  });
+
+  assert.equal(networkCalls, 0);
+  assert.deepEqual(models, [cachedModel]);
+});
+
+test('refreshes and writes a non-empty online catalog', async () => {
+  const refreshedModel = toPiModel({ id: 'example/refreshed' });
+  let writtenEntry;
+  const models = await refreshZenMuxModels({
+    allowNetwork: true,
+    store: {
+      async read() {
+        return undefined;
+      },
+      async write(entry) {
+        writtenEntry = entry;
+      },
+    },
+  }, [toPiModel({ id: 'example/fallback' })], async () => [refreshedModel]);
+
+  assert.deepEqual(models, [refreshedModel]);
+  assert.deepEqual(restoreCachedModels(writtenEntry), [refreshedModel]);
+});
+
+test('keeps a valid cache when online discovery fails or returns empty', async () => {
+  const cachedModel = toPiModel({ id: 'example/cached' });
+  const fallbackModel = toPiModel({ id: 'example/fallback' });
+  const context = {
+    allowNetwork: true,
+    store: {
+      async read() {
+        return createModelsCacheEntry([cachedModel]);
+      },
+      async write() {
+        assert.fail('failed discovery must not overwrite the cache');
+      },
+    },
+  };
+
+  assert.deepEqual(
+    await refreshZenMuxModels(context, [fallbackModel], async () => []),
+    [cachedModel],
+  );
+  assert.deepEqual(
+    await refreshZenMuxModels(context, [fallbackModel], async () => {
+      throw new Error('offline');
+    }),
+    [cachedModel],
+  );
+});
+
+test('ignores a model cache created for another OAuth origin', async () => {
+  const fallbackModel = toPiModel({ id: 'example/fallback' });
+  const mismatchedEntry = {
+    ...createModelsCacheEntry([toPiModel({ id: 'example/cached' })]),
+    oauthOrigin: 'https://pre.zenmux.ai',
+  };
+
+  assert.deepEqual(restoreCachedModels(mismatchedEntry), []);
+  assert.deepEqual(
+    await refreshZenMuxModels({
+      allowNetwork: false,
+      store: { async read() { return mismatchedEntry; } },
+    }, [fallbackModel]),
+    [fallbackModel],
+  );
 });
